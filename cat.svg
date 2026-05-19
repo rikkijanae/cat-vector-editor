@@ -1,4 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200" viewBox="0 0 1600 1200" fill="none">
+<style>
+  .eye { transition: transform 110ms ease-in-out; }
+  .eye.blink { transform: scaleY(0.06); }
+</style>
 <g clip-path="url(#clip0_82_1229)">
 <rect width="1600" height="1200" fill="black"/>
 <path d="M1043.22 694.107C1157.88 735.288 1398.48 887.827 1444.99 1161.07C1446.76 1172.73 1450.55 1201.98 1451.5 1225.72" stroke="#FF6745" stroke-width="9.5167"/>
@@ -24,13 +28,17 @@
 <circle cx="751.241" cy="906.973" r="17.4108" stroke="#FF98D5" stroke-width="9.73995"/>
 <path d="M804.688 678.297H1121.46" stroke="#F6F5F5" stroke-width="9.73995" stroke-linecap="round" stroke-dasharray="17.04 24.35"/>
 <circle cx="963.073" cy="678.298" r="17.4108" fill="black" stroke="#FF98D5" stroke-width="9.73995"/>
-<ellipse cx="436.918" cy="446.501" rx="43.2427" ry="40.7711" fill="#F6F5F5"/>
-<g id="leftPupil" style="transition: transform 120ms ease-out;">
-  <rect x="415.482" y="426.693" width="24.1183" height="48.7499" rx="12.0591" transform="rotate(-15.548 415.482 426.693)" fill="black"/>
+<g class="eye" style="transform-origin: 436.918px 446.501px;">
+  <ellipse cx="436.918" cy="446.501" rx="43.2427" ry="40.7711" fill="#F6F5F5"/>
+  <g id="leftPupil" style="transition: transform 120ms ease-out;">
+    <rect x="415.482" y="426.693" width="24.1183" height="48.7499" rx="12.0591" transform="rotate(-15.548 415.482 426.693)" fill="black"/>
+  </g>
 </g>
-<ellipse cx="43.2427" cy="40.7711" rx="43.2427" ry="40.7711" transform="matrix(-1 0 0 1 742.518 405.73)" fill="#F7F5F5"/>
-<g id="rightPupil" style="transition: transform 120ms ease-out;">
-  <rect width="24.1183" height="48.7499" rx="12.0591" transform="matrix(-0.963406 -0.268045 -0.268045 0.963406 720.711 426.694)" fill="black"/>
+<g class="eye" style="transform-origin: 699.275px 446.501px;">
+  <ellipse cx="43.2427" cy="40.7711" rx="43.2427" ry="40.7711" transform="matrix(-1 0 0 1 742.518 405.73)" fill="#F7F5F5"/>
+  <g id="rightPupil" style="transition: transform 120ms ease-out;">
+    <rect width="24.1183" height="48.7499" rx="12.0591" transform="matrix(-0.963406 -0.268045 -0.268045 0.963406 720.711 426.694)" fill="black"/>
+  </g>
 </g>
 <path d="M569.115 565.953L569.115 620.424" stroke="#2AB1EC" stroke-width="9.73995"/>
 <path d="M569.112 618.016C549.973 643.662 516.656 654.317 486.187 644.538L473.312 640.405" stroke="#2AB1EC" stroke-width="9.73995" stroke-linecap="round"/>
@@ -55,7 +63,6 @@
   // Cat pupils are vertical slits — allow more horizontal travel than vertical.
   var MAX_X = 11;
   var MAX_Y = 4;
-  // Distance (in SVG units) at which the offset saturates.
   var SATURATE = 420;
 
   function clientToSvg(x, y) {
@@ -74,7 +81,6 @@
       var dx = p.x - eye.cx;
       var dy = p.y - eye.cy;
       var dist = Math.sqrt(dx * dx + dy * dy);
-      // Smooth falloff: scale ~linearly until SATURATE, then clamp at 1.
       var k = Math.min(1, dist / SATURATE);
       var ang = Math.atan2(dy, dx);
       var ox = Math.cos(ang) * MAX_X * k;
@@ -87,6 +93,32 @@
   window.addEventListener('touchmove', function (e) {
     if (e.touches && e.touches[0]) update(e.touches[0].clientX, e.touches[0].clientY);
   }, { passive: true });
+
+  // ---- Periodic blink ----
+  var eyeGroups = svg.querySelectorAll('.eye');
+  function closeEyes()  { for (var i = 0; i < eyeGroups.length; i++) eyeGroups[i].classList.add('blink'); }
+  function openEyes()   { for (var i = 0; i < eyeGroups.length; i++) eyeGroups[i].classList.remove('blink'); }
+
+  function blinkOnce(done) {
+    closeEyes();
+    setTimeout(function () { openEyes(); if (done) done(); }, 110);
+  }
+
+  function scheduleNext() {
+    // Natural-feeling: 2.5–7s between blink events.
+    var delay = 2500 + Math.random() * 4500;
+    setTimeout(function () {
+      blinkOnce(function () {
+        // ~15% chance of a quick double-blink.
+        if (Math.random() < 0.15) {
+          setTimeout(function () { blinkOnce(scheduleNext); }, 140);
+        } else {
+          scheduleNext();
+        }
+      });
+    }, delay);
+  }
+  scheduleNext();
 })();
 ]]></script>
 </svg>
