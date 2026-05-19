@@ -2,41 +2,382 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Cat — pupils that follow your cursor</title>
+<title>Cat — interactive editor</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  html, body { margin: 0; padding: 0; height: 100%; background: #000; }
-  body { display: grid; place-items: center; overflow: hidden; }
-  /* The SVG scales to fit the viewport while keeping its aspect ratio. */
-  object { width: 100vmin * (1600 / 1200); height: 100vmin; max-width: 100vw; max-height: 100vh; }
-  object { width: min(100vw, calc(100vh * 4 / 3)); height: min(100vh, calc(100vw * 3 / 4)); display: block; }
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; color: #f6f5f5;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { display: grid; grid-template-rows: 1fr auto; overflow: hidden; }
+  #canvas { display: grid; place-items: center; overflow: hidden; }
+  #canvas object {
+    width: min(100vw, calc((100vh - 72px) * 4 / 3));
+    height: min(100vh - 72px, calc(100vw * 3 / 4));
+    display: block;
+  }
+  #toolbar {
+    display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+    gap: 12px; padding: 12px 16px;
+    background: #111; border-top: 1px solid #222; min-height: 48px;
+  }
+  .tool {
+    background: #1a1a1a; color: #f6f5f5;
+    border: 1px solid #2a2a2a; border-radius: 6px;
+    padding: 8px 14px; font: inherit; font-size: 14px;
+    cursor: pointer; transition: background 80ms, border-color 80ms;
+  }
+  .tool:hover { background: #222; border-color: #3a3a3a; }
+  .tool.active { background: #FF6745; border-color: #FF6745; color: #000; }
+  .sub {
+    display: flex; align-items: center; gap: 10px;
+    padding-left: 12px; margin-left: 4px; border-left: 1px solid #222;
+  }
+  .sub.hidden { display: none; }
+  .sub label { font-size: 13px; color: #aaa; cursor: pointer; user-select: none; }
+  .sub input[type="radio"] { accent-color: #FF6745; vertical-align: middle; }
+  .sub input[type="color"] {
+    width: 36px; height: 36px;
+    border: 1px solid #2a2a2a; border-radius: 6px; padding: 0; background: transparent; cursor: pointer;
+  }
+  #status { font-size: 12px; color: #888; min-width: 220px; text-align: right; }
 </style>
 </head>
 <body>
-  <object type="image/svg+xml" data="cat.svg" aria-label="Cat illustration whose pupils follow the cursor"></object>
-  <script>
-    // The SVG handles cursor tracking internally via its own mousemove listener.
-    // When the SVG is loaded inside <object>, the inner document only receives
-    // mouse events while the cursor is over it. Forward outer-window events
-    // into the inner SVG so the pupils track from anywhere on the page.
-    const obj = document.querySelector('object');
-    obj.addEventListener('load', () => {
-      const inner = obj.contentDocument;
-      if (!inner) return;
-      const innerSvg = inner.documentElement;
-      function forward(e) {
-        const rect = obj.getBoundingClientRect();
-        const pt = innerSvg.createSVGPoint();
-        pt.x = e.clientX - rect.left;
-        pt.y = e.clientY - rect.top;
-        // Dispatch a synthetic mousemove inside the SVG document at the same client coords.
-        const evt = new inner.defaultView.MouseEvent('mousemove', {
-          clientX: pt.x + rect.left, clientY: pt.y + rect.top, bubbles: true
-        });
-        innerSvg.dispatchEvent(evt);
-      }
-      window.addEventListener('mousemove', forward);
+
+<div id="canvas">
+  <object type="image/svg+xml" data="cat.svg" id="svg-obj" aria-label="Cat illustration"></object>
+</div>
+
+<div id="toolbar">
+  <button class="tool" data-tool="path">&#9999;&#65039; Path</button>
+  <button class="tool" data-tool="color">&#127912; Color</button>
+  <div class="sub hidden" id="color-controls">
+    <label><input type="radio" name="target" value="fill" checked> Fill</label>
+    <label><input type="radio" name="target" value="stroke"> Stroke</label>
+    <input type="color" id="color-input" value="#ff6745" aria-label="Color">
+  </div>
+  <div id="status">Pick a tool and click an element.</div>
+</div>
+
+<script>
+'use strict';
+
+const obj = document.getElementById('svg-obj');
+const statusEl = document.getElementById('status');
+const setStatus = (s) => { statusEl.textContent = s; };
+
+let innerDoc = null;
+let innerSvg = null;
+let innerWindow = null;
+let activeTool = null;
+let selectedPath = null;
+let pathCmds = null;
+let dragState = null;
+
+const ARG_COUNT = { M:2, L:2, H:1, V:1, C:6, S:4, Q:4, T:2, A:7, Z:0 };
+
+obj.addEventListener('load', () => {
+  innerDoc = obj.contentDocument;
+  innerSvg = innerDoc.documentElement;
+  innerWindow = innerDoc.defaultView;
+  forwardMouseMove();
+  attachEditor();
+});
+
+// Forward outer mousemove into the inner SVG so the pupil-tracking script in cat.svg
+// receives events from anywhere on the page, not just over the SVG itself.
+function forwardMouseMove() {
+  window.addEventListener('mousemove', (e) => {
+    if (!innerSvg) return;
+    const evt = new innerWindow.MouseEvent('mousemove', {
+      clientX: e.clientX, clientY: e.clientY, bubbles: true
     });
-  </script>
+    innerSvg.dispatchEvent(evt);
+  });
+}
+
+// ===== Toolbar =====
+document.querySelectorAll('.tool').forEach((btn) => {
+  btn.addEventListener('click', () => setTool(btn.dataset.tool));
+});
+
+function setTool(tool) {
+  if (activeTool === tool) tool = null;
+  activeTool = tool;
+  document.querySelectorAll('.tool').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tool === tool);
+  });
+  document.getElementById('color-controls').classList.toggle('hidden', tool !== 'color');
+  if (innerSvg) innerSvg.style.cursor = tool ? 'crosshair' : 'default';
+  clearPathHandles();
+  selectedPath = null;
+  if (tool === 'path') setStatus('Click a path to edit its anchors.');
+  else if (tool === 'color') setStatus('Click an element to paint it.');
+  else setStatus('Pick a tool and click an element.');
+}
+
+// ===== Click pickup =====
+function attachEditor() {
+  innerDoc.addEventListener('click', (e) => {
+    if (!activeTool) return;
+    if (dragState) return; // suppress click after a drag
+    const t = pickEditTarget(e.target);
+    if (!t) {
+      if (activeTool === 'path') { clearPathHandles(); selectedPath = null; setStatus('Click a path to edit its anchors.'); }
+      return;
+    }
+    if (activeTool === 'color') applyColor(t);
+    if (activeTool === 'path') {
+      if (t.tagName.toLowerCase() === 'path') beginPathEdit(t);
+      else setStatus('Path tool only edits <path> elements.');
+    }
+  });
+}
+
+function pickEditTarget(el) {
+  while (el && el !== innerSvg) {
+    if (el.id && el.id.indexOf('__editor') === 0) return null;
+    const tag = el.tagName && el.tagName.toLowerCase();
+    // Skip the 1600x1200 black background rect.
+    if (tag === 'rect'
+        && el.getAttribute('width') === '1600'
+        && el.getAttribute('height') === '1200') return null;
+    if (tag === 'path' || tag === 'ellipse' || tag === 'circle' || tag === 'rect') return el;
+    el = el.parentElement;
+  }
+  return null;
+}
+
+// ===== Color tool =====
+function applyColor(el) {
+  const target = document.querySelector('input[name="target"]:checked').value;
+  const color = document.getElementById('color-input').value;
+  el.setAttribute(target, color);
+  setStatus('Set ' + target + ' = ' + color + ' on <' + el.tagName.toLowerCase() + '>');
+}
+
+// ===== Path tool =====
+function beginPathEdit(pathEl) {
+  clearPathHandles();
+  selectedPath = pathEl;
+  try {
+    pathCmds = parsePathD(pathEl.getAttribute('d') || '');
+  } catch (err) {
+    setStatus('Could not parse path: ' + err.message);
+    return;
+  }
+  renderHandles();
+  setStatus('Drag a handle to reshape (' + pathCmds.length + ' anchors).');
+}
+
+function clearPathHandles() {
+  if (!innerDoc) return;
+  const g = innerDoc.getElementById('__editor_handles__');
+  if (g) g.remove();
+}
+
+function renderHandles() {
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const g = innerDoc.createElementNS(svgNS, 'g');
+  g.setAttribute('id', '__editor_handles__');
+  pathCmds.forEach((cmd, idx) => {
+    if (cmd.cmd.toUpperCase() === 'Z') return;
+    const c = innerDoc.createElementNS(svgNS, 'circle');
+    c.setAttribute('cx', cmd.endX);
+    c.setAttribute('cy', cmd.endY);
+    c.setAttribute('r', '11');
+    c.setAttribute('fill', '#FF6745');
+    c.setAttribute('stroke', '#fff');
+    c.setAttribute('stroke-width', '3');
+    c.style.cursor = 'grab';
+    c.dataset.idx = idx;
+    g.appendChild(c);
+  });
+  innerSvg.appendChild(g);
+  attachHandleDrag(g);
+}
+
+function attachHandleDrag(g) {
+  g.addEventListener('mousedown', (e) => {
+    if (!e.target.tagName || e.target.tagName.toLowerCase() !== 'circle') return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragState = { circle: e.target, idx: parseInt(e.target.dataset.idx, 10) };
+    e.target.style.cursor = 'grabbing';
+  });
+  innerDoc.addEventListener('mousemove', (e) => {
+    if (!dragState) return;
+    const pt = innerSvg.createSVGPoint();
+    pt.x = e.clientX; pt.y = e.clientY;
+    const ctm = innerSvg.getScreenCTM();
+    if (!ctm) return;
+    const svgPt = pt.matrixTransform(ctm.inverse());
+    updateAnchor(dragState.idx, svgPt.x, svgPt.y);
+    dragState.circle.setAttribute('cx', svgPt.x);
+    dragState.circle.setAttribute('cy', svgPt.y);
+  });
+  const endDrag = () => {
+    if (!dragState) return;
+    dragState.circle.style.cursor = 'grab';
+    // Clear on next tick so the trailing click event still sees dragState and skips.
+    const old = dragState; dragState = null;
+    setTimeout(() => { if (!dragState) {} }, 0);
+    void old;
+  };
+  innerDoc.addEventListener('mouseup', endDrag);
+  // Also handle the case where the mouse leaves the SVG mid-drag.
+  window.addEventListener('mouseup', endDrag);
+}
+
+// Recompute end coordinates of one command from its start + args.
+function recomputeEnd(c) {
+  const upper = c.cmd.toUpperCase();
+  const isRel = c.cmd === c.cmd.toLowerCase();
+  if (upper === 'M' || upper === 'L' || upper === 'T') {
+    c.endX = isRel ? c.startX + c.args[0] : c.args[0];
+    c.endY = isRel ? c.startY + c.args[1] : c.args[1];
+  } else if (upper === 'H') {
+    c.endX = isRel ? c.startX + c.args[0] : c.args[0];
+    c.endY = c.startY;
+  } else if (upper === 'V') {
+    c.endX = c.startX;
+    c.endY = isRel ? c.startY + c.args[0] : c.args[0];
+  } else if (upper === 'C') {
+    c.endX = isRel ? c.startX + c.args[4] : c.args[4];
+    c.endY = isRel ? c.startY + c.args[5] : c.args[5];
+  } else if (upper === 'S' || upper === 'Q') {
+    c.endX = isRel ? c.startX + c.args[2] : c.args[2];
+    c.endY = isRel ? c.startY + c.args[3] : c.args[3];
+  } else if (upper === 'A') {
+    c.endX = isRel ? c.startX + c.args[5] : c.args[5];
+    c.endY = isRel ? c.startY + c.args[6] : c.args[6];
+  } else if (upper === 'Z') {
+    c.endX = c.subpathStartX; c.endY = c.subpathStartY;
+  }
+}
+
+function updateAnchor(idx, newX, newY) {
+  const c = pathCmds[idx];
+  const upper = c.cmd.toUpperCase();
+  const isRel = c.cmd === c.cmd.toLowerCase();
+
+  // H / V: convert to L (l) if moved off-axis so a free 2D drag works.
+  if (upper === 'H' || upper === 'V') {
+    c.cmd = isRel ? 'l' : 'L';
+    c.args = isRel ? [newX - c.startX, newY - c.startY] : [newX, newY];
+    c.anchorXIdx = 0; c.anchorYIdx = 1;
+  } else {
+    if (c.anchorXIdx !== null) c.args[c.anchorXIdx] = isRel ? newX - c.startX : newX;
+    if (c.anchorYIdx !== null) c.args[c.anchorYIdx] = isRel ? newY - c.startY : newY;
+  }
+  c.endX = newX; c.endY = newY;
+
+  // Propagate: subsequent commands' starts are the previous command's end.
+  // For absolute commands, their own end stays the same; for relative, end shifts.
+  for (let i = idx + 1; i < pathCmds.length; i++) {
+    pathCmds[i].startX = pathCmds[i - 1].endX;
+    pathCmds[i].startY = pathCmds[i - 1].endY;
+    recomputeEnd(pathCmds[i]);
+  }
+
+  selectedPath.setAttribute('d', serializeCommands(pathCmds));
+}
+
+// ===== Path parser / serializer =====
+function parsePathD(d) {
+  const re = /([MmLlHhVvCcSsQqTtAaZz])|(-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)/g;
+  const tokens = [];
+  let m;
+  while ((m = re.exec(d)) !== null) {
+    if (m[1]) tokens.push({ type: 'cmd', val: m[1] });
+    else tokens.push({ type: 'num', val: parseFloat(m[2]) });
+  }
+
+  const cmds = [];
+  let curX = 0, curY = 0;
+  let subStartX = 0, subStartY = 0;
+  let lastCmd = null;
+  let i = 0;
+
+  while (i < tokens.length) {
+    let cmd;
+    if (tokens[i].type === 'cmd') {
+      cmd = tokens[i].val; i++;
+      lastCmd = cmd;
+    } else {
+      if (!lastCmd) throw new Error('path starts with a number');
+      // After an M/m, implicit repeats are L/l.
+      cmd = (lastCmd === 'M') ? 'L' : (lastCmd === 'm') ? 'l' : lastCmd;
+    }
+    const upper = cmd.toUpperCase();
+    const isRel = cmd === cmd.toLowerCase();
+    const n = ARG_COUNT[upper];
+    if (n === undefined) throw new Error('unknown command ' + cmd);
+
+    if (n === 0) {
+      // Z
+      const entry = {
+        cmd, args: [], startX: curX, startY: curY,
+        endX: subStartX, endY: subStartY,
+        subpathStartX: subStartX, subpathStartY: subStartY,
+        anchorXIdx: null, anchorYIdx: null
+      };
+      cmds.push(entry);
+      curX = subStartX; curY = subStartY;
+      continue;
+    }
+
+    const args = [];
+    for (let j = 0; j < n; j++) {
+      if (!tokens[i] || tokens[i].type !== 'num') throw new Error('not enough args for ' + cmd);
+      args.push(tokens[i].val); i++;
+    }
+
+    let endX, endY, anchorXIdx = null, anchorYIdx = null;
+    if (upper === 'M' || upper === 'L' || upper === 'T') {
+      endX = isRel ? curX + args[0] : args[0];
+      endY = isRel ? curY + args[1] : args[1];
+      anchorXIdx = 0; anchorYIdx = 1;
+    } else if (upper === 'H') {
+      endX = isRel ? curX + args[0] : args[0]; endY = curY;
+      anchorXIdx = 0;
+    } else if (upper === 'V') {
+      endX = curX; endY = isRel ? curY + args[0] : args[0];
+      anchorYIdx = 0;
+    } else if (upper === 'C') {
+      endX = isRel ? curX + args[4] : args[4];
+      endY = isRel ? curY + args[5] : args[5];
+      anchorXIdx = 4; anchorYIdx = 5;
+    } else if (upper === 'S' || upper === 'Q') {
+      endX = isRel ? curX + args[2] : args[2];
+      endY = isRel ? curY + args[3] : args[3];
+      anchorXIdx = 2; anchorYIdx = 3;
+    } else if (upper === 'A') {
+      endX = isRel ? curX + args[5] : args[5];
+      endY = isRel ? curY + args[6] : args[6];
+      anchorXIdx = 5; anchorYIdx = 6;
+    }
+
+    cmds.push({
+      cmd, args, startX: curX, startY: curY, endX, endY,
+      subpathStartX: subStartX, subpathStartY: subStartY,
+      anchorXIdx, anchorYIdx
+    });
+    if (upper === 'M') { subStartX = endX; subStartY = endY; }
+    curX = endX; curY = endY;
+  }
+  return cmds;
+}
+
+function fmt(n) {
+  if (Number.isInteger(n)) return n.toString();
+  // 3 decimal places is plenty for screen-scale drag precision.
+  const s = n.toFixed(3);
+  return s.indexOf('.') >= 0 ? s.replace(/0+$/, '').replace(/\.$/, '') : s;
+}
+
+function serializeCommands(cmds) {
+  return cmds.map((c) => c.cmd + (c.args.length ? ' ' + c.args.map(fmt).join(' ') : '')).join(' ');
+}
+</script>
 </body>
 </html>
